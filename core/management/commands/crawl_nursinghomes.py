@@ -32,15 +32,16 @@ def _compute_richness(data: dict) -> int:
     basic_items = data.get('basic_items') or []
     staff_items = data.get('staff_items') or []
     program_items = data.get('program_items') or []
-    location_item = data.get('location_item')
+    location_items = data.get('location_items') or []
+    noncov_items = data.get('non_covered_items') or []
     score = 0
     score += sum(1 for v in ov.values() if v not in (None, '', []))
     score += len(basic_items)
     score += len(eval_items) * 2  # 평가 항목 가중치
     score += len(staff_items)
     score += len(program_items)
-    if location_item:
-        score += 3  # 위치 정보 존재 가중치
+    score += len(location_items) * 3  # 위치 정보 항목별 가중치
+    score += len(noncov_items) * 2  # 비급여 항목 가중치
     return int(score * 100)  # 소수 방지
 
 USER_AGENT = (
@@ -241,7 +242,7 @@ class Command(BaseCommand):
                                     self.stdout.write(f"[갱신] {facility.code} (점수 {richness})")
                                 else:
                                     saved_facilities.append(facility)
-                                    self.stdout.write(f"[저장] {facility.code} (점���� {richness})")
+                                    self.stdout.write(f"[저장] {facility.code} (점������� {richness})")
                         else:
                             dup_skipped += 1
                             self.stdout.write(f"[중복-스킵] {code} (기존 점수 {best_scores[code]}, 새 점수 {richness})")
@@ -289,7 +290,7 @@ class Command(BaseCommand):
                 # 사이트명(시니어톡톡) 오탐 방지: 시설명에 공백/한글 다��� 포함 기대
                 if name_text and name_text != '시니어톡톡':
                     overview['name'] = name_text
-            # address (추후 위치 모델에 활용 가능)
+            # address (추��� 위치 모델에 활용 가능)
             addr_el = container.select_one('.section-view-address')
             if addr_el:
                 overview['address'] = addr_el.get_text(strip=True)
@@ -375,7 +376,7 @@ class Command(BaseCommand):
                         if t:
                             evaluation_items.append({'title': t, 'content': c})
         data['evaluation_items'] = evaluation_items
-        # 인력현황 섹션 파싱 (h4 '인력현황')
+        # 인력현황 섹션 파싱 (h4 '인력현���')
         staff_items = []
         staff_header = None
         for h4 in soup.select('h4'):
@@ -416,8 +417,8 @@ class Command(BaseCommand):
                         if pt:
                             program_items.append({'title': pt, 'content': pc_raw})
         data['program_items'] = program_items
-        # 위치 섹션 파싱 (h4 '위치')
-        location_item = None
+        # 위치 섹션 파싱 (h4 '위치') - 개별 항목으로 분리
+        location_items = []
         loc_header = None
         for h4 in soup.select('h4'):
             if h4.get_text(strip=True) == '위치':
@@ -426,14 +427,19 @@ class Command(BaseCommand):
         if loc_header:
             # 주소 p
             addr_block = loc_header.find_next('div', class_='section-view-content')
-            addr_texts = []
             if addr_block:
+                addr_texts = []
                 for p in addr_block.find_all('p'):
                     t = p.get_text(strip=True)
                     if t:
                         addr_texts.append(t)
-            # 교통/주�� dl
-            transport = parking = ''
+                if addr_texts:
+                    location_items.append({
+                        'title': '주소',
+                        'content': ' | '.join(addr_texts)
+                    })
+
+            # 교통/주차 dl - 각각 개별 항목으로 저장
             loc_section2 = loc_header.find_next('div', class_='section-view-content2')
             if loc_section2:
                 dl_loc = loc_section2.find('dl')
@@ -443,20 +449,12 @@ class Command(BaseCommand):
                     for dt, dd in zip(dts_l, dds_l):
                         label = dt.get_text(strip=True)
                         val = dd.get_text(strip=True)
-                        if label == '교통편':
-                            transport = val
-                        elif label == '주차시설':
-                            parking = val
-            if addr_texts or transport or parking:
-                parts = []
-                if addr_texts:
-                    parts.append('주소: ' + ' | '.join(addr_texts))
-                if transport:
-                    parts.append('교통편: ' + transport)
-                if parking:
-                    parts.append('주차시설: ' + parking)
-                location_item = {'title': '위치', 'content': '\n'.join(parts)}
-        data['location_item'] = location_item
+                        if label and val:
+                            location_items.append({
+                                'title': label,
+                                'content': val
+                            })
+        data['location_items'] = location_items
         # 홈페이지 섹션 파싱 (<b>홈페이지</b> 이후 첫 a href)
         homepage_item = None
         for b in soup.select('b'):
@@ -473,35 +471,43 @@ class Command(BaseCommand):
                             homepage_item = {'title': '홈페이지', 'content': txt}
                 break
         data['homepage_item'] = homepage_item
-        # 비급여 항목 섹션 파싱 (div.section-calc-label[data-focus="non_benefit"])
-        noncov_item = None
+        # 비급여 항목 섹션 파싱 (div.section-calc-label[data-focus="non_benefit"]) - 개별 항목으로 분리
+        noncov_items = []
         label_div = soup.select_one('div.section-calc-label[data-focus="non_benefit"]')
         if label_div and '비급여 항목' in label_div.get_text():
             container_div = label_div.find_parent('div', class_='section-calc-content') or label_div.parent
-            # 월 합계 금액
-            total_em = label_div.select_one('span em')
-            total_txt = ''
-            if total_em:
-                total_raw = total_em.get_text(strip=True)
-                if total_raw:
-                    total_txt = f"월 합계: {total_raw}원" if not total_raw.endswith('원') else f"월 합계: {total_raw}"
-            # 항목 리스트
-            lines = []
-            if total_txt:
-                lines.append(total_txt)
+            # 월 합계는 제외하고 개별 항목만 저장
             if container_div:
                 for li in container_div.select('div.section-calc-item ul li'):
                     label = li.find('label')
                     if not label:
                         continue
                     text = label.get_text(" ", strip=True)
-                    # 불필요한 다중 공백 정리
+                    # 불필��한 다중 공백 정리
                     text = re.sub(r'\s+', ' ', text)
                     if text:
-                        lines.append(text)
-            if lines:
-                noncov_item = {'title': '비급여 항목', 'content': '\n'.join(lines)}
-        data['non_covered_item'] = noncov_item
+                        # 항목명과 금액을 분리
+                        if ':' in text:
+                            title_part, content_part = text.split(':', 1)
+                            noncov_items.append({
+                                'title': title_part.strip(),
+                                'content': content_part.strip()
+                            })
+                        else:
+                            # ':' 가 없는 경우 공백으로 분리 시도
+                            parts = text.rsplit(' ', 1)
+                            if len(parts) == 2 and '원' in parts[1]:
+                                noncov_items.append({
+                                    'title': parts[0].strip(),
+                                    'content': parts[1].strip()
+                                })
+                            else:
+                                # 분리할 수 없는 경우 전체를 title로
+                                noncov_items.append({
+                                    'title': text,
+                                    'content': ''
+                                })
+        data['non_covered_items'] = noncov_items
         return data
 
     # 헬퍼: 숫자 파싱 (콤마 제거, '명' 제거)
@@ -601,22 +607,22 @@ class Command(BaseCommand):
                     FacilityProgram(facility=facility, title=item['title'][:100], content=item['content'])
                     for item in program_items if item.get('title')
                 ])
-            # 위치 항목 저장 (OneToOne 재생성)
+            # 위치 항목 저장 (개별 항목으로 재생성)
             from core.models import FacilityLocation
-            loc_item = data.get('location_item')
-            if loc_item:
-                FacilityLocation.objects.filter(facility=facility).delete()
-                FacilityLocation.objects.create(facility=facility, title=loc_item['title'], content=loc_item['content'])
+            location_items = data.get('location_items') or []
+            FacilityLocation.objects.filter(facility=facility).delete()
+            for item in location_items:
+                FacilityLocation.objects.create(facility=facility, title=item['title'], content=item['content'])
             # 홈페이지 항목 저장 (OneToOne 재생성)
             from core.models import FacilityHomepage
             homepage_item = data.get('homepage_item')
             if homepage_item:
                 FacilityHomepage.objects.filter(facility=facility).delete()
                 FacilityHomepage.objects.create(facility=facility, title=homepage_item['title'], content=homepage_item['content'])
-            # 비급여 항목 저장 (OneToOne 재생성)
+            # 비급여 항목 저장 (개별 항목으로 재생성)
             from core.models import FacilityNonCovered
-            noncov_item = data.get('non_covered_item')
-            if noncov_item:
-                FacilityNonCovered.objects.filter(facility=facility).delete()
-                FacilityNonCovered.objects.create(facility=facility, title=noncov_item['title'], content=noncov_item['content'])
+            noncov_items = data.get('non_covered_items') or []
+            FacilityNonCovered.objects.filter(facility=facility).delete()
+            for item in noncov_items:
+                FacilityNonCovered.objects.create(facility=facility, title=item['title'], content=item['content'])
         return facility

@@ -65,14 +65,14 @@ class FacilityProgram(TimestampedModel):
         return f"{self.facility.code}-{self.title}"
 
 class FacilityLocation(TimestampedModel):
-    facility = models.OneToOneField(Facility, on_delete=models.CASCADE, related_name='location_info_simple')
+    facility = models.ForeignKey(Facility, on_delete=models.CASCADE, related_name='location_items')
     title = models.CharField(max_length=100, default='위치')
     content = models.TextField(blank=True)
     class Meta:
         verbose_name = "위치"
         verbose_name_plural = "위치"
     def __str__(self):
-        return self.title
+        return f"{self.facility.code}-{self.title}"
 
 class FacilityHomepage(TimestampedModel):
     facility = models.OneToOneField(Facility, on_delete=models.CASCADE, related_name='homepage_info')
@@ -85,11 +85,11 @@ class FacilityHomepage(TimestampedModel):
         return self.title
 
 class FacilityNonCovered(TimestampedModel):
-    facility = models.OneToOneField(Facility, on_delete=models.CASCADE, related_name='noncovered_info')
+    facility = models.ForeignKey(Facility, on_delete=models.CASCADE, related_name='noncovered_items')
     title = models.CharField(max_length=100, default='비급여 항목')
     content = models.TextField(blank=True)
     class Meta:
         verbose_name = "비급여 항목"
         verbose_name_plural = "비급여 항목"
     def __str__(self):
-        return self.title
+        return f"{self.facility.code}-{self.title}"
