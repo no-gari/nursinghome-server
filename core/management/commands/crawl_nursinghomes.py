@@ -59,16 +59,16 @@ class Command(BaseCommand):
     help = "시니어톡톡 요양원 목록 + 디테일 크롤링 후 CSV 저장"
 
     def add_arguments(self, parser):
-        parser.add_argument("--location", default="서울시/전체", help="검색 위치 파라미터 (기본: 서울시/전체)")
-        parser.add_argument("--max-pages", type=int, default=1, help="검색 페이지 최대 크롤 수 (기��:1)")
+        parser.add_argument("--location", default="전체", help="검색 위치 파라미터 (기본: 전체 - 모든 지역 순회)")
+        parser.add_argument("--max-pages", type=int, default=50, help="각 지역별 최대 크롤 페이지 수 (기본:50)")
         parser.add_argument("--delay", type=float, default=1.0, help="각 요청 사이 기본 지연(초)")
         parser.add_argument("--headful", action="store_true", help="브라우저 UI 표시")
-        # CSV / detail-url ���션 제거 및 최소 옵션 유지
+        # CSV / detail-url 옵션 제거 및 최소 옵션 유지
         parser._actions = [a for a in parser._actions if a.dest not in {"output","no_csv","detail_url"}]
         # 안전하게 남은 help 수정
         for a in parser._actions:
             if a.dest == 'max_pages':
-                a.help = '검색 페이지 최대 크롤 수'
+                a.help = '각 지역별 최대 크롤 페이지 수'
 
     def handle(self, *args, **options):
         try:
@@ -83,13 +83,31 @@ class Command(BaseCommand):
         max_pages = options["max_pages"]
         delay = options["delay"]
         headless = not options["headful"]
+
+        # 전국 지역 리스트
+        all_locations = [
+            "서울시/전체", "부산시/전체", "대구시/전체", "인천시/전체",
+            "광주시/전체", "대전시/전체", "울산시/전체", "세종시/전체",
+            "경기도/전체", "강원도/전체", "충청북도/전체", "충청남도/전체",
+            "전라북도/전체", "전라남도/전체", "경상북도/전체", "경상남도/전체",
+            "제주도/전체"
+        ]
+
+        # 특정 지역 지정시 해당 지역만, 아니면 전체 지역 순회
+        if location != "전체":
+            locations_to_crawl = [location if "/" in location else f"{location}/전체"]
+        else:
+            locations_to_crawl = all_locations
+
         saved_facilities = []
         detail_urls_seen = set()
         best_scores = {}  # code -> richness score
         dup_skipped = 0
         dup_updated = 0
+        total_regions = len(locations_to_crawl)
 
-        self.stdout.write(f"검색 위치: {location}, 페이지 수: {max_pages}")
+        self.stdout.write(f"크롤링 대상 지역: {total_regions}개")
+        self.stdout.write(f"각 지역별 최대 페이지: {max_pages}")
 
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=headless, args=["--disable-blink-features=AutomationControlled"])
@@ -168,95 +186,127 @@ class Command(BaseCommand):
                         break
                     last_height = new_height
 
-            for page_no in range(1, max_pages + 1):
-                query = DEFAULT_QUERY.copy()
-                query["location"] = location
-                query["page"] = page_no
-                # urlencode 시 슬래시 유지 위해 location 별도 처리
-                # (예: 서울시/전체 -> 서울시%2F전체) 이미 기본 urlencode 로 처리 가능
-                url = f"{SEARCH_BASE_URL}?{urlencode(query, doseq=True)}"
-                self.stdout.write(f"페이지 이동: {url}")
-                ok = await safe_goto(page, url, expect_selector='a')
-                if not ok:
-                    continue
-                # 자동 스크롤 수행 (동적 로딩 대비)
-                await auto_scroll(page)
-                html = await page.content()
-                # 디버그 스냅샷 저장
-                debug_path = SCREENSHOT_DIR / f"list_page{page_no}.html"
-                debug_path.write_text(html, encoding='utf-8')
+            # 지역별 순회
+            for region_idx, current_location in enumerate(locations_to_crawl, 1):
+                self.stdout.write(f"\n{'='*60}")
+                self.stdout.write(f"[{region_idx}/{total_regions}] {current_location} 크롤링 시작")
+                self.stdout.write(f"{'='*60}")
 
-                soup = BeautifulSoup(html, "lxml")
+                region_facilities = 0
+                empty_page_count = 0
 
-                # 후보: list, item, card 등 class 를 가진 a 태그 수집 (일반화)
-                anchors = []
-                for a in soup.find_all("a", href=True):
-                    href_lower = a["href"].lower()
-                    if "/search/view/" in href_lower:  # 우선 강제 패턴
-                        anchors.append(a)
-                    elif any(k in href_lower for k in DETAIL_KEYWORDS):
-                        anchors.append(a)
-                # 중복 제거 & 절대 URL 보정
-                detail_links = []
-                for a in anchors:
-                    href = a["href"].strip()
-                    if href.startswith("javascript:"):
+                # 해당 지역의 페이지별 순회
+                for page_no in range(1, max_pages + 1):
+                    query = DEFAULT_QUERY.copy()
+                    query["location"] = current_location
+                    query["page"] = page_no
+
+                    url = f"{SEARCH_BASE_URL}?{urlencode(query, doseq=True)}"
+                    self.stdout.write(f"[{current_location}] 페이지 {page_no} 이동: {url}")
+
+                    ok = await safe_goto(page, url, expect_selector='a')
+                    if not ok:
                         continue
-                    if href.startswith("/"):
-                        href = "https://www.seniortalktalk.com" + href
-                    if href not in detail_urls_seen and href.startswith("http"):
-                        detail_urls_seen.add(href)
-                        detail_links.append(href)
 
-                # 링크 디버그 저장
-                link_debug_file = SCREENSHOT_DIR / f"links_page{page_no}.txt"
-                link_debug_file.write_text("\n".join(detail_links), encoding='utf-8')
+                    # 자동 스크롤 수행 (동적 로딩 대비)
+                    await auto_scroll(page)
+                    html = await page.content()
 
-                if not detail_links:
-                    self.stdout.write(f"페이지 {page_no} 상세 링크 0개 - HTML 및 링크 디버그 저장됨")
-                else:
-                    self.stdout.write(f"페이지 {page_no} 상세 링크 {len(detail_links)}개")
-                for link in tqdm(detail_links, desc=f"p{page_no} 상세", unit="fac"):
-                    dpage = await safe_detail(context, link)
-                    if not dpage:
+                    # 디버그 스냅샷 저장
+                    region_name = current_location.split('/')[0]
+                    debug_path = SCREENSHOT_DIR / f"{region_name}_page{page_no}.html"
+                    debug_path.write_text(html, encoding='utf-8')
+
+                    soup = BeautifulSoup(html, "lxml")
+
+                    # 후보: list, item, card 등 class 를 가진 a 태그 수집 (일반화)
+                    anchors = []
+                    for a in soup.find_all("a", href=True):
+                        href_lower = a["href"].lower()
+                        if "/search/view/" in href_lower:  # 우선 강제 패턴
+                            anchors.append(a)
+                        elif any(k in href_lower for k in DETAIL_KEYWORDS):
+                            anchors.append(a)
+
+                    # 중복 제거 & 절대 URL 보정
+                    detail_links = []
+                    for a in anchors:
+                        href = a["href"].strip()
+                        if href.startswith("javascript:"):
+                            continue
+                        if href.startswith("/"):
+                            href = "https://www.seniortalktalk.com" + href
+                        if href not in detail_urls_seen and href.startswith("http"):
+                            detail_urls_seen.add(href)
+                            detail_links.append(href)
+
+                    # 링크 디버그 저장
+                    link_debug_file = SCREENSHOT_DIR / f"{region_name}_links_page{page_no}.txt"
+                    link_debug_file.write_text("\n".join(detail_links), encoding='utf-8')
+
+                    if not detail_links:
+                        empty_page_count += 1
+                        self.stdout.write(f"[{current_location}] 페이지 {page_no} 상세 링크 0개")
+                        # 연속 3페이지 이상 비어있으면 해당 지역 크롤링 종료
+                        if empty_page_count >= 3:
+                            self.stdout.write(f"[{current_location}] 연속 {empty_page_count}페이지 비어있음 - 해당 지역 크롤링 종료")
+                            break
                         continue
-                    try:
-                        dhtml = await dpage.content()
-                        dsoup = BeautifulSoup(dhtml, "lxml")
-                        data = self.parse_detail(dsoup, link)
-                        code = data.get('overview', {}).get('code')
-                        richness = _compute_richness(data)
-                        do_save = True
-                        updated = False
-                        if code in best_scores:
-                            if richness > best_scores[code]:
-                                updated = True
-                            else:
-                                do_save = False
-                        if do_save:
-                            facility = await sync_to_async(self.save_to_db, thread_sensitive=True)(data)
-                            best_scores[code] = richness
-                            if facility:
-                                if updated:
-                                    dup_updated += 1
-                                    self.stdout.write(f"[갱신] {facility.code} (점수 {richness})")
+                    else:
+                        empty_page_count = 0  # 링크가 있으면 카운터 리셋
+                        self.stdout.write(f"[{current_location}] 페이지 {page_no} 상세 링크 {len(detail_links)}개")
+
+                    page_facilities = 0
+                    for link in tqdm(detail_links, desc=f"{region_name} p{page_no}", unit="fac"):
+                        dpage = await safe_detail(context, link)
+                        if not dpage:
+                            continue
+                        try:
+                            dhtml = await dpage.content()
+                            dsoup = BeautifulSoup(dhtml, "lxml")
+                            data = self.parse_detail(dsoup, link)
+                            code = data.get('overview', {}).get('code')
+                            richness = _compute_richness(data)
+                            do_save = True
+                            updated = False
+                            if code in best_scores:
+                                if richness > best_scores[code]:
+                                    updated = True
                                 else:
-                                    saved_facilities.append(facility)
-                                    self.stdout.write(f"[저장] {facility.code} (점������� {richness})")
-                        else:
-                            dup_skipped += 1
-                            self.stdout.write(f"[중복-스킵] {code} (기존 점수 {best_scores[code]}, 새 점수 {richness})")
-                    except Exception as e:
-                        self.stderr.write(f"[오류] {link}: {e}\n")
-                    finally:
-                        await dpage.close()
-                        await asyncio.sleep(delay + random.uniform(0, delay / 2))
+                                    do_save = False
+                            if do_save:
+                                facility = await sync_to_async(self.save_to_db, thread_sensitive=True)(data)
+                                best_scores[code] = richness
+                                if facility:
+                                    if updated:
+                                        dup_updated += 1
+                                        self.stdout.write(f"[갱신] {facility.code} (점수 {richness})")
+                                    else:
+                                        saved_facilities.append(facility)
+                                        page_facilities += 1
+                                        region_facilities += 1
+                                        self.stdout.write(f"[저장] {facility.code} (점수 {richness})")
+                            else:
+                                dup_skipped += 1
+                                self.stdout.write(f"[중복-스킵] {code} (기존 점수 {best_scores[code]}, 새 점수 {richness})")
+                        except Exception as e:
+                            self.stderr.write(f"[오류] {link}: {e}\n")
+                        finally:
+                            await dpage.close()
+                            await asyncio.sleep(delay + random.uniform(0, delay / 2))
+
+                    self.stdout.write(f"[{current_location}] 페이지 {page_no} 완료: {page_facilities}개 시설 저장")
+
+                self.stdout.write(f"[{current_location}] 지역 크롤링 완료: 총 {region_facilities}개 시설")
 
             await context.close()
             await browser.close()
 
+        self.stdout.write(f"\n{'='*60}")
+        self.stdout.write(f"전체 크롤링 완료!")
         self.stdout.write(f"총 {len({f.id for f in saved_facilities})}개 시설 DB 저장")
         self.stdout.write(f"중복 스킵: {dup_skipped}, 정보 갱신: {dup_updated}")
+        self.stdout.write(f"{'='*60}")
         try:
             eval_count = await sync_to_async(core_models.FacilityEvaluation.objects.count)()
             self.stdout.write(f"평가 레코드 누적: {eval_count}")
@@ -334,7 +384,7 @@ class Command(BaseCommand):
         basic_items = []
         basic_header = None
         for h4 in soup.select('h4'):
-            if h4.get_text(strip=True) == '기본정보':
+            if h4.get_text(strip=True) == '기본���보':
                 basic_header = h4
                 break
         if basic_header:
@@ -619,7 +669,7 @@ class Command(BaseCommand):
             if homepage_item:
                 FacilityHomepage.objects.filter(facility=facility).delete()
                 FacilityHomepage.objects.create(facility=facility, title=homepage_item['title'], content=homepage_item['content'])
-            # 비급여 항목 저장 (개별 항목으로 재생성)
+            # 비급여 항목 ��장 (개별 항목으로 재생성)
             from core.models import FacilityNonCovered
             noncov_items = data.get('non_covered_items') or []
             FacilityNonCovered.objects.filter(facility=facility).delete()
