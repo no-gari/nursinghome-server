@@ -93,3 +93,25 @@ class FacilityNonCovered(TimestampedModel):
         verbose_name_plural = "비급여 항목"
     def __str__(self):
         return f"{self.facility.code}-{self.title}"
+
+
+class ChatMessage(TimestampedModel):
+    """로그인된 사용자의 채팅 기록"""
+    ROLE_CHOICES = (
+        ('user', '사용자'),
+        ('bot', '봇'),
+    )
+
+    user = models.ForeignKey(
+        'auth.User', on_delete=models.CASCADE, related_name='chat_messages'
+    )
+    role = models.CharField(max_length=10, choices=ROLE_CHOICES)
+    content = models.TextField()
+
+    class Meta:
+        ordering = ['created_at']
+        verbose_name = '채팅 기록'
+        verbose_name_plural = '채팅 기록'
+
+    def __str__(self):
+        return f"{self.user.username} - {self.role}: {self.content[:20]}"

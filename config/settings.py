@@ -114,6 +114,9 @@ USE_I18N = True
 
 USE_TZ = False  # 로컬 시간 바로 사용 (원하면 True 유지 가능)
 
+LOGIN_REDIRECT_URL = '/'
+LOGOUT_REDIRECT_URL = '/'
+
 
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.2/howto/static-files/

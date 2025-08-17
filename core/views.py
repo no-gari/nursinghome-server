@@ -4,9 +4,12 @@ from rest_framework.decorators import api_view, action
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.http import JsonResponse
-from .models import Facility
+from .models import Facility, ChatMessage
 from .serializers import FacilityListSerializer, FacilityDetailSerializer, ChatRequestSerializer, ChatResponseSerializer
-from .rag_service import RAGService
+try:
+    from .rag_service import RAGService
+except Exception:  # pragma: no cover - dependency issues during tests
+    RAGService = None
 
 # 기존 Django 템플릿 뷰
 def chatbot_view(request):
@@ -72,11 +75,23 @@ class ChatbotAPI(APIView):
             query = serializer.validated_data['query']
 
             try:
+                if RAGService is None:
+                    raise Exception('RAGService is not available')
                 rag_service = RAGService()
                 result = rag_service.chat(query)
 
+                user = request.user if request.user.is_authenticated else None
+                if user:
+                    ChatMessage.objects.create(user=user, role='user', content=query)
+
                 response_serializer = ChatResponseSerializer(data=result)
                 if response_serializer.is_valid():
+                    if user:
+                        ChatMessage.objects.create(
+                            user=user,
+                            role='bot',
+                            content=response_serializer.validated_data['answer'],
+                        )
                     return Response(response_serializer.data, status=status.HTTP_200_OK)
                 else:
                     return Response(response_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
