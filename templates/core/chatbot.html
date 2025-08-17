@@ -76,6 +76,33 @@
             cursor: not-allowed;
         }
 
+        .auth-actions {
+            position: absolute;
+            left: 20px;
+            top: 50%;
+            transform: translateY(-50%);
+        }
+
+        .auth-btn {
+            background: rgba(255,255,255,0.2);
+            border: 1px solid rgba(255,255,255,0.3);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            text-decoration: none;
+            transition: all 0.3s;
+        }
+
+        .auth-btn:hover {
+            background: rgba(255,255,255,0.3);
+        }
+
+        .auth-actions form {
+            margin: 0;
+        }
+
         .chat-messages {
             flex: 1;
             overflow-y: auto;
@@ -237,6 +264,16 @@
             <div class="chat-header">
                 <h1>🏥 요양원 찾기 AI 챗봇</h1>
                 <p>원하는 조건의 요양원을 찾아드립니다</p>
+                <div class="auth-actions">
+                    {% if user.is_authenticated %}
+                    <form action="{% url 'core:logout' %}" method="post">
+                        {% csrf_token %}
+                        <button type="submit" class="auth-btn">로그아웃</button>
+                    </form>
+                    {% else %}
+                    <a href="{% url 'core:login' %}" class="auth-btn">로그인</a>
+                    {% endif %}
+                </div>
                 <button
                     class="initialize-btn"
                     @click="initializeRAG"

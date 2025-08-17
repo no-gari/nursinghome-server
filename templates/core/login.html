@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>로그인</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; }
+        form { max-width: 400px; margin: auto; display: flex; flex-direction: column; gap: 10px; }
+        input { padding: 8px; font-size: 1rem; }
+        button { padding: 8px; background: #4CAF50; color: white; border: none; cursor: pointer; }
+        button:hover { background: #45a049; }
+    </style>
+</head>
+<body>
+<h2>로그인</h2>
+<form method="post">
+    {% csrf_token %}
+    <label for="id_username">사용자명</label>
+    <input type="text" name="username" id="id_username" required>
+    <label for="id_password">비밀번호</label>
+    <input type="password" name="password" id="id_password" required>
+    <button type="submit">로그인</button>
+</form>
+</body>
+</html>
